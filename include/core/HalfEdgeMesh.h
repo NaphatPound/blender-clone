@@ -44,6 +44,7 @@ struct Vertex {
     Vec3 position;
     Vec3 normal;
     Vec3 color = Vec3(1.0f, 1.0f, 1.0f); // vertex color (default white)
+    float mask = 0.0f; // sculpt mask (0=unmasked, 1=fully protected)
     int32_t halfEdge = -1; // index to one outgoing half-edge
 };
 

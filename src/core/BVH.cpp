@@ -25,31 +25,29 @@ void BVH::rebuild(const HalfEdgeMesh& mesh) {
 
 void BVH::buildRecursive(int32_t nodeIdx, std::vector<int32_t>& faceIndices,
                           int32_t start, int32_t end, const HalfEdgeMesh& mesh) {
-    auto& node = m_nodes[nodeIdx];
-
-    // Compute bounds for this node
-    node.bounds = AABB();
+    // Compute bounds for this node (use index, not reference — vector may reallocate later)
+    m_nodes[nodeIdx].bounds = AABB();
     for (int32_t i = start; i < end; i++) {
         int32_t fi = faceIndices[i];
         int32_t he0 = mesh.face(fi).halfEdge;
         int32_t he1 = mesh.halfEdge(he0).next;
         int32_t he2 = mesh.halfEdge(he1).next;
 
-        node.bounds.expand(mesh.vertex(mesh.halfEdge(he2).vertex).position);
-        node.bounds.expand(mesh.vertex(mesh.halfEdge(he0).vertex).position);
-        node.bounds.expand(mesh.vertex(mesh.halfEdge(he1).vertex).position);
+        m_nodes[nodeIdx].bounds.expand(mesh.vertex(mesh.halfEdge(he2).vertex).position);
+        m_nodes[nodeIdx].bounds.expand(mesh.vertex(mesh.halfEdge(he0).vertex).position);
+        m_nodes[nodeIdx].bounds.expand(mesh.vertex(mesh.halfEdge(he1).vertex).position);
     }
 
     int32_t count = end - start;
     if (count <= MAX_LEAF_FACES) {
-        node.isLeaf = true;
-        node.left = start;
-        node.right = count;
+        m_nodes[nodeIdx].isLeaf = true;
+        m_nodes[nodeIdx].left = start;
+        m_nodes[nodeIdx].right = count;
         return;
     }
 
     // Find longest axis to split
-    Vec3 size = node.bounds.size();
+    Vec3 size = m_nodes[nodeIdx].bounds.size();
     int axis = 0;
     if (size.y > size.x) axis = 1;
     if (size.z > (axis == 0 ? size.x : size.y)) axis = 2;
@@ -74,16 +72,17 @@ void BVH::buildRecursive(int32_t nodeIdx, std::vector<int32_t>& faceIndices,
     int32_t mid = (start + end) / 2;
 
     // Create child nodes
+    // NOTE: push_back may reallocate, invalidating `node` reference — use nodeIdx after
     int32_t leftIdx = static_cast<int32_t>(m_nodes.size());
     m_nodes.push_back(BVHNode{});
     int32_t rightIdx = static_cast<int32_t>(m_nodes.size());
     m_nodes.push_back(BVHNode{});
 
-    node.left = leftIdx;
-    node.right = rightIdx;
-    node.isLeaf = false;
+    // Re-fetch node reference after push_back (vector may have reallocated)
+    m_nodes[nodeIdx].left = leftIdx;
+    m_nodes[nodeIdx].right = rightIdx;
+    m_nodes[nodeIdx].isLeaf = false;
 
-    // Note: node reference may be invalidated after push_back, re-fetch
     buildRecursive(leftIdx, faceIndices, start, mid, mesh);
     buildRecursive(rightIdx, faceIndices, mid, end, mesh);
 }

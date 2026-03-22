@@ -390,6 +390,14 @@ int main(int argc, char* argv[]) {
                             break;
                         default: break;
                     }
+                    // Ctrl+Z = undo, Ctrl+Shift+Z = redo
+                    if (ctrl && key == SDLK_z) {
+                        if (shift) {
+                            if (sculptEngine.redo()) { renderer.uploadMesh(mesh); statusMsg = "Redo"; statusTimer = 1.0f; }
+                        } else {
+                            if (sculptEngine.undo()) { renderer.uploadMesh(mesh); statusMsg = "Undo"; statusTimer = 1.0f; }
+                        }
+                    }
                 } else {
                     // Edit mode keys
                     switch (key) {
@@ -476,6 +484,7 @@ int main(int argc, char* argv[]) {
                             }
                         } else if (modeManager.isSculpt()) {
                             sculpting = true;
+                            sculptEngine.pushUndo(); // save state before stroke
                         } else {
                             // Edit mode: pick selection
                             bool shift = (SDL_GetModState() & KMOD_SHIFT) != 0;
@@ -640,16 +649,18 @@ int main(int argc, char* argv[]) {
                 ImGui::Separator();
                 ImGui::Spacing();
 
-                const char* brushNames[] = { "Draw", "Smooth", "Grab" };
-                float buttonW = (ImGui::GetContentRegionAvail().x - 16) / 3.0f;
-                for (int i = 0; i < 3; i++) {
-                    if (i > 0) ImGui::SameLine();
+                const char* brushNames[] = {"Draw","Smooth","Grab","Clay","Flatten","Crease","Pinch","Inflate","Scrape","Mask"};
+                int brushCount = 10;
+                int cols = 5;
+                float btnW = (ImGui::GetContentRegionAvail().x - static_cast<float>(cols - 1) * 4) / static_cast<float>(cols);
+                for (int i = 0; i < brushCount; i++) {
+                    if (i % cols != 0) ImGui::SameLine();
                     bool isSel = (currentBrush == i);
                     if (isSel) {
                         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.50f, 0.75f, 1.0f));
                         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.40f, 0.55f, 0.80f, 1.0f));
                     }
-                    if (ImGui::Button(brushNames[i], ImVec2(buttonW, 32))) {
+                    if (ImGui::Button(brushNames[i], ImVec2(btnW, 28))) {
                         currentBrush = i;
                         sculptEngine.brush().settings().type = static_cast<sculpt::BrushType>(i);
                     }
@@ -670,32 +681,58 @@ int main(int argc, char* argv[]) {
                 if (ImGui::Combo("Falloff", &currentFalloff, falloffNames, 3))
                     sculptEngine.brush().settings().falloff = static_cast<sculpt::FalloffType>(currentFalloff);
 
-                // Falloff curve preview
-                ImGui::Text("Falloff Curve:");
-                ImVec2 canvasPos = ImGui::GetCursorScreenPos();
-                ImVec2 canvasSize(ImGui::GetContentRegionAvail().x, 50);
-                ImGui::InvisibleButton("falloff_cv", canvasSize);
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                dl->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), IM_COL32(30, 30, 35, 255), 4.0f);
-                ImVec2 prev;
-                for (int i = 0; i <= 50; i++) {
-                    float t = static_cast<float>(i) / 50.0f;
-                    float val = 0;
-                    switch (currentFalloff) {
-                        case 0: val = 1.0f - (3*t*t - 2*t*t*t); break;
-                        case 1: val = 1.0f - t; break;
-                        case 2: val = (t < 1.0f) ? 1.0f : 0.0f; break;
-                    }
-                    ImVec2 p(canvasPos.x + t * canvasSize.x, canvasPos.y + canvasSize.y - val * canvasSize.y);
-                    if (i > 0) dl->AddLine(prev, p, IM_COL32(140, 170, 255, 255), 2.0f);
-                    prev = p;
-                }
-
                 ImGui::Spacing();
                 ImGui::Text("OPTIONS");
                 ImGui::Separator();
                 if (ImGui::Checkbox("Invert (X)", &invertBrush))
                     sculptEngine.brush().settings().invert = invertBrush;
+
+                // Symmetry
+                ImGui::Spacing();
+                ImGui::Text("SYMMETRY");
+                ImGui::Separator();
+                static bool symX = false, symY = false, symZ = false;
+                if (ImGui::Checkbox("X##sym", &symX)) sculptEngine.brush().settings().symmetryX = symX;
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Y##sym", &symY)) sculptEngine.brush().settings().symmetryY = symY;
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Z##sym", &symZ)) sculptEngine.brush().settings().symmetryZ = symZ;
+
+                // Mask operations
+                if (currentBrush == 9) { // Mask brush
+                    ImGui::Spacing();
+                    ImGui::Text("MASK");
+                    ImGui::Separator();
+                    float maskBtnW = (ImGui::GetContentRegionAvail().x - 4) * 0.5f;
+                    if (ImGui::Button("Clear Mask", ImVec2(maskBtnW, 24))) {
+                        sculptEngine.clearMask();
+                        renderer.updateMeshVertices(mesh);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Invert Mask", ImVec2(maskBtnW, 24))) {
+                        sculptEngine.invertMask();
+                        renderer.updateMeshVertices(mesh);
+                    }
+                }
+
+                // Undo/Redo
+                ImGui::Spacing();
+                ImGui::Text("UNDO/REDO");
+                ImGui::Separator();
+                {
+                    float undoBtnW = (ImGui::GetContentRegionAvail().x - 4) * 0.5f;
+                    char undoLabel[32], redoLabel[32];
+                    snprintf(undoLabel, sizeof(undoLabel), "Undo (%d)", sculptEngine.undoDepth());
+                    snprintf(redoLabel, sizeof(redoLabel), "Redo (%d)", sculptEngine.redoDepth());
+                    if (ImGui::Button(undoLabel, ImVec2(undoBtnW, 24))) {
+                        if (sculptEngine.undo()) renderer.uploadMesh(mesh);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(redoLabel, ImVec2(undoBtnW, 24))) {
+                        if (sculptEngine.redo()) renderer.uploadMesh(mesh);
+                    }
+                }
+
                 if (ImGui::Checkbox("Wireframe (W)", &wireframe))
                     renderer.setWireframe(wireframe);
 

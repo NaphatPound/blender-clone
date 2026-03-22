@@ -200,9 +200,11 @@ void HalfEdgeMesh::getTriangleData(std::vector<float>& vertexData,
         vertexData[i * 9 + 3] = m_vertices[i].normal.x;
         vertexData[i * 9 + 4] = m_vertices[i].normal.y;
         vertexData[i * 9 + 5] = m_vertices[i].normal.z;
-        vertexData[i * 9 + 6] = m_vertices[i].color.x;
-        vertexData[i * 9 + 7] = m_vertices[i].color.y;
-        vertexData[i * 9 + 8] = m_vertices[i].color.z;
+        // Darken color by mask value (masked areas appear darker)
+        float maskDarken = 1.0f - m_vertices[i].mask * 0.6f;
+        vertexData[i * 9 + 6] = m_vertices[i].color.x * maskDarken;
+        vertexData[i * 9 + 7] = m_vertices[i].color.y * maskDarken;
+        vertexData[i * 9 + 8] = m_vertices[i].color.z * maskDarken;
     }
 
     // Indices from faces
