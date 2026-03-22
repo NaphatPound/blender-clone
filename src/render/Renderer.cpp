@@ -171,6 +171,7 @@ void Renderer::uploadMesh(const HalfEdgeMesh& mesh) {
     std::vector<uint32_t> indices;
     mesh.getTriangleData(vertexData, indices);
     m_indexCount = static_cast<uint32_t>(indices.size());
+    m_vertexCount = static_cast<uint32_t>(mesh.vertexCount());
 
     glBindVertexArray(m_vao);
 
@@ -199,6 +200,34 @@ void Renderer::uploadMesh(const HalfEdgeMesh& mesh) {
     glEnableVertexAttribArray(2);
 
     glBindVertexArray(0);
+}
+
+void Renderer::updateMeshVertices(const HalfEdgeMesh& mesh) {
+    // Fast path: only update position and normal data in existing buffer (no realloc)
+    if (mesh.vertexCount() != m_vertexCount || m_vertexCount == 0) {
+        uploadMesh(mesh); // topology changed, full re-upload needed
+        return;
+    }
+
+    // Build only vertex data (same stride: 9 floats)
+    std::vector<float> vertexData(m_vertexCount * 9);
+    for (size_t i = 0; i < m_vertexCount; i++) {
+        const auto& v = mesh.vertex(static_cast<int32_t>(i));
+        vertexData[i * 9 + 0] = v.position.x;
+        vertexData[i * 9 + 1] = v.position.y;
+        vertexData[i * 9 + 2] = v.position.z;
+        vertexData[i * 9 + 3] = v.normal.x;
+        vertexData[i * 9 + 4] = v.normal.y;
+        vertexData[i * 9 + 5] = v.normal.z;
+        vertexData[i * 9 + 6] = v.color.x;
+        vertexData[i * 9 + 7] = v.color.y;
+        vertexData[i * 9 + 8] = v.color.z;
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0,
+                    static_cast<long>(vertexData.size() * sizeof(float)),
+                    vertexData.data());
 }
 
 void Renderer::render(const Camera& camera, float aspectRatio) {

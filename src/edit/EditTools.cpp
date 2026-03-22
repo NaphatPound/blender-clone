@@ -233,16 +233,15 @@ bool EditTools::loopCut(HalfEdgeMesh& mesh, int32_t startHE, int segments) {
     std::unordered_set<int32_t> removedFaces;
     for (const auto& sp : splits) {
         // Remove faceA if not already removed
-        if (sp.faceA >= 0 && !removedFaces.count(sp.faceA)) {
+        if (sp.faceA >= 0 && !removedFaces.count(sp.faceA) && !mesh.isFaceDeleted(sp.faceA)) {
             auto fv = mesh.faceVertices(sp.faceA);
+            if (fv[0] < 0) { removedFaces.insert(sp.faceA); continue; } // invalid face
             mesh.removeFace(sp.faceA);
             removedFaces.insert(sp.faceA);
 
-            // Split faceA: replace the edge (v0,v1) with two edges via midpoint
-            // faceA has vertices including v0 and v1; the third vertex is "other"
             int32_t other = -1;
             for (int i = 0; i < 3; i++) {
-                if (fv[i] != sp.origV0 && fv[i] != sp.origV1) { other = fv[i]; break; }
+                if (fv[i] >= 0 && fv[i] != sp.origV0 && fv[i] != sp.origV1) { other = fv[i]; break; }
             }
             if (other >= 0) {
                 mesh.addFace(sp.origV0, sp.midVert, other);
@@ -251,14 +250,15 @@ bool EditTools::loopCut(HalfEdgeMesh& mesh, int32_t startHE, int segments) {
         }
 
         // Remove faceB if not already removed
-        if (sp.faceB >= 0 && !removedFaces.count(sp.faceB)) {
+        if (sp.faceB >= 0 && !removedFaces.count(sp.faceB) && !mesh.isFaceDeleted(sp.faceB)) {
             auto fv = mesh.faceVertices(sp.faceB);
+            if (fv[0] < 0) { removedFaces.insert(sp.faceB); continue; }
             mesh.removeFace(sp.faceB);
             removedFaces.insert(sp.faceB);
 
             int32_t other = -1;
             for (int i = 0; i < 3; i++) {
-                if (fv[i] != sp.origV0 && fv[i] != sp.origV1) { other = fv[i]; break; }
+                if (fv[i] >= 0 && fv[i] != sp.origV0 && fv[i] != sp.origV1) { other = fv[i]; break; }
             }
             if (other >= 0) {
                 mesh.addFace(sp.origV1, sp.midVert, other);

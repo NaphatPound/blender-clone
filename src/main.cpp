@@ -13,6 +13,10 @@
 #include "paint/PaintEngine.h"
 #include "tools/LowpolyTools.h"
 #include "export/GltfExporter.h"
+#include "anim/Armature.h"
+#include "anim/AutoRig.h"
+#include "anim/BoneRenderer.h"
+#include "anim/Animation.h"
 
 #include "SDL.h"
 #ifdef __APPLE__
@@ -205,6 +209,18 @@ int main(int argc, char* argv[]) {
     // Export state
     int exportPresetIdx = 0;
 
+    // Animation / Pose state
+    sculpt::Armature armature;
+    sculpt::BoneRenderer boneRenderer;
+    sculpt::AnimationPlayer animPlayer;
+    sculpt::Animation idleAnim, walkAnim, waveAnim, jumpAnim;
+    std::vector<sculpt::Vec3> restPositions, restNormals;
+    int selectedBone = -1;
+    bool hasArmature = false;
+    int animPresetIdx = 0;
+
+    boneRenderer.init();
+
     // Edit mode state
     int selectionModeIdx = 0; // 0=Vertex, 1=Edge, 2=Face
     float extrudeOffset = 0.2f;
@@ -281,7 +297,19 @@ int main(int argc, char* argv[]) {
 
                 // TAB: toggle mode
                 if (key == SDLK_TAB) {
+                    // Save old mode BEFORE toggling
+                    bool wasPose = modeManager.isPose();
                     modeManager.toggle();
+                    // Restore rest pose when LEAVING Pose mode
+                    if (wasPose && hasArmature) {
+                        animPlayer.stop();
+                        armature.resetPose();
+                        for (size_t ri = 0; ri < std::min(restPositions.size(), mesh.vertexCount()); ri++) {
+                            mesh.vertex(static_cast<int32_t>(ri)).position = restPositions[ri];
+                            mesh.vertex(static_cast<int32_t>(ri)).normal = restNormals[ri];
+                        }
+                        renderer.uploadMesh(mesh);
+                    }
                     sculpting = false;
                     painting = false;
                     needsUpload = false;
@@ -302,6 +330,18 @@ int main(int argc, char* argv[]) {
                         renderer.setShadingMode(sculpt::ShadingMode::VertexColor);
                         shadingModeIdx = 2;
                         statusMsg = "Paint Mode";
+                    } else if (modeManager.isPose()) {
+                        // Snapshot rest pose
+                        restPositions.resize(mesh.vertexCount());
+                        restNormals.resize(mesh.vertexCount());
+                        for (size_t i = 0; i < mesh.vertexCount(); i++) {
+                            restPositions[i] = mesh.vertex(static_cast<int32_t>(i)).position;
+                            restNormals[i] = mesh.vertex(static_cast<int32_t>(i)).normal;
+                        }
+                        if (hasArmature) {
+                            boneRenderer.update(armature, selectedBone);
+                        }
+                        statusMsg = "Pose Mode";
                     }
                     statusTimer = 2.0f;
                     break;
@@ -425,13 +465,13 @@ int main(int argc, char* argv[]) {
                             sculpt::Ray ray = makeRay(event.button.x, event.button.y);
                             if (paintFaceFill) {
                                 if (paintEngine.fillFace(ray)) {
-                                    renderer.uploadMesh(mesh);
+                                    renderer.updateMeshVertices(mesh);
                                 }
                             } else {
                                 sculpt::RayHit hit = sculptEngine.raycast(ray);
                                 if (hit.hit) {
                                     paintEngine.paintStroke(hit.position);
-                                    renderer.uploadMesh(mesh);
+                                    renderer.updateMeshVertices(mesh);
                                 }
                             }
                         } else if (modeManager.isSculpt()) {
@@ -489,7 +529,7 @@ int main(int argc, char* argv[]) {
                         } else {
                             sculptEngine.stroke(hit.position, hit.normal);
                         }
-                        renderer.uploadMesh(mesh);
+                        renderer.updateMeshVertices(mesh); // fast: vertices only
                         needsUpload = true;
                     }
                 } else if (painting && modeManager.isPaint() && !paintFaceFill) {
@@ -500,7 +540,7 @@ int main(int argc, char* argv[]) {
                         paintEngine.settings().radius = paintRadius;
                         paintEngine.settings().strength = paintStrength;
                         paintEngine.paintStroke(hit.position);
-                        renderer.uploadMesh(mesh);
+                        renderer.updateMeshVertices(mesh); // fast: colors only
                     }
                 } else if (modeManager.isEdit()) {
                     sculpt::Ray ray = makeRay(event.motion.x, event.motion.y);
@@ -523,6 +563,14 @@ int main(int argc, char* argv[]) {
             editEngine.clearDirty();
         }
 
+        // --- Pose mode animation update ---
+        if (modeManager.isPose() && hasArmature && animPlayer.playing) {
+            animPlayer.update(dt, armature);
+            armature.applyPose(mesh, restPositions, restNormals);
+            renderer.updateMeshVertices(mesh); // fast path: no realloc
+            boneRenderer.update(armature, selectedBone);
+        }
+
         // --- ImGui Frame ---
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -538,19 +586,20 @@ int main(int argc, char* argv[]) {
                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
 
-            float thirdW = (ImGui::GetContentRegionAvail().x - 16) / 3.0f;
+            float btnW4 = (ImGui::GetContentRegionAvail().x - 24) / 4.0f;
 
             struct ModeBtn { const char* name; sculpt::AppMode mode; ImVec4 col; ImVec4 hov; };
             ModeBtn modes[] = {
                 {"Sculpt", sculpt::AppMode::Sculpt, {0.20f,0.45f,0.75f,1}, {0.25f,0.50f,0.80f,1}},
                 {"Edit",   sculpt::AppMode::Edit,   {0.75f,0.45f,0.15f,1}, {0.80f,0.50f,0.20f,1}},
                 {"Paint",  sculpt::AppMode::Paint,  {0.65f,0.20f,0.65f,1}, {0.75f,0.30f,0.75f,1}},
+                {"Pose",   sculpt::AppMode::Pose,   {0.20f,0.65f,0.45f,1}, {0.25f,0.75f,0.50f,1}},
             };
-            for (int mi = 0; mi < 3; mi++) {
+            for (int mi = 0; mi < 4; mi++) {
                 if (mi > 0) ImGui::SameLine();
                 bool active = (modeManager.current == modes[mi].mode);
                 if (active) { ImGui::PushStyleColor(ImGuiCol_Button, modes[mi].col); ImGui::PushStyleColor(ImGuiCol_ButtonHovered, modes[mi].hov); }
-                if (ImGui::Button(modes[mi].name, ImVec2(thirdW, 34))) {
+                if (ImGui::Button(modes[mi].name, ImVec2(btnW4, 34))) {
                     modeManager.current = modes[mi].mode;
                     if (modes[mi].mode == sculpt::AppMode::Sculpt) editEngine.deselectAll();
                     if (modes[mi].mode == sculpt::AppMode::Edit) {
@@ -558,6 +607,15 @@ int main(int argc, char* argv[]) {
                     }
                     if (modes[mi].mode == sculpt::AppMode::Paint) {
                         renderer.setShadingMode(sculpt::ShadingMode::VertexColor); shadingModeIdx = 2;
+                    }
+                    if (modes[mi].mode == sculpt::AppMode::Pose) {
+                        restPositions.resize(mesh.vertexCount());
+                        restNormals.resize(mesh.vertexCount());
+                        for (size_t pi = 0; pi < mesh.vertexCount(); pi++) {
+                            restPositions[pi] = mesh.vertex(static_cast<int32_t>(pi)).position;
+                            restNormals[pi] = mesh.vertex(static_cast<int32_t>(pi)).normal;
+                        }
+                        if (hasArmature) boneRenderer.update(armature, selectedBone);
                     }
                 }
                 if (active) ImGui::PopStyleColor(2);
@@ -741,7 +799,7 @@ int main(int argc, char* argv[]) {
 
                 ImGui::End();
 
-            } else {
+            } else if (modeManager.isPaint()) {
                 // ---- PAINT MODE PANEL ----
                 ImGui::Begin("Paint Tools", &showToolPanel, ImGuiWindowFlags_AlwaysAutoResize);
 
@@ -785,6 +843,140 @@ int main(int argc, char* argv[]) {
 
                 if (ImGui::Checkbox("Wireframe (W)", &wireframe))
                     renderer.setWireframe(wireframe);
+
+                ImGui::End();
+
+            } else if (modeManager.isPose()) {
+                // ---- POSE MODE PANEL ----
+                ImGui::Begin("Pose Tools", &showToolPanel, ImGuiWindowFlags_AlwaysAutoResize);
+
+                float fullW = ImGui::GetContentRegionAvail().x;
+
+                ImGui::Text("ARMATURE");
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                if (!hasArmature) {
+                    if (ImGui::Button("Auto-Rig Humanoid", ImVec2(fullW, 32))) {
+                        sculpt::AutoRig::rigHumanoid(mesh, armature);
+                        sculpt::AutoRig::computeWeights(mesh, armature);
+                        hasArmature = true;
+                        // Generate preset animations
+                        idleAnim = sculpt::Animation::createIdle(armature);
+                        walkAnim = sculpt::Animation::createWalk(armature);
+                        waveAnim = sculpt::Animation::createWave(armature);
+                        jumpAnim = sculpt::Animation::createJump(armature);
+                        armature.updatePoseMatrices();
+                        boneRenderer.update(armature, selectedBone);
+                        statusMsg = "Auto-rigged with " + std::to_string(armature.boneCount()) + " bones";
+                        statusTimer = 3.0f;
+                    }
+                    ImGui::TextWrapped("Click to auto-rig the mesh with a humanoid skeleton.");
+                } else {
+                    ImGui::Text("Bones: %d", armature.boneCount());
+                    ImGui::Spacing();
+
+                    // Bone list
+                    ImGui::Text("BONES");
+                    ImGui::Separator();
+                    if (ImGui::BeginListBox("##bonelist", ImVec2(fullW, 150))) {
+                        for (int32_t bi = 0; bi < armature.boneCount(); bi++) {
+                            bool isSel = (selectedBone == bi);
+                            if (ImGui::Selectable(armature.bone(bi).name.c_str(), isSel)) {
+                                selectedBone = bi;
+                            }
+                        }
+                        ImGui::EndListBox();
+                    }
+
+                    // Selected bone rotation
+                    if (selectedBone >= 0 && selectedBone < armature.boneCount()) {
+                        ImGui::Spacing();
+                        ImGui::Text("ROTATION: %s", armature.bone(selectedBone).name.c_str());
+                        ImGui::Separator();
+                        bool changed = false;
+                        changed |= ImGui::SliderAngle("X##brot", &armature.bone(selectedBone).poseRotation[0], -180, 180);
+                        changed |= ImGui::SliderAngle("Y##brot", &armature.bone(selectedBone).poseRotation[1], -180, 180);
+                        changed |= ImGui::SliderAngle("Z##brot", &armature.bone(selectedBone).poseRotation[2], -180, 180);
+                        if (changed && !animPlayer.playing) {
+                            armature.updatePoseMatrices();
+                            armature.applyPose(mesh, restPositions, restNormals);
+                            renderer.updateMeshVertices(mesh);
+                            boneRenderer.update(armature, selectedBone);
+                        }
+                    }
+
+                    if (ImGui::Button("Reset Pose", ImVec2(fullW, 26))) {
+                        armature.resetPose();
+                        armature.applyPose(mesh, restPositions, restNormals);
+                        renderer.updateMeshVertices(mesh);
+                        boneRenderer.update(armature, selectedBone);
+                        animPlayer.stop();
+                    }
+
+                    // Animation controls
+                    ImGui::Spacing();
+                    ImGui::Text("ANIMATION");
+                    ImGui::Separator();
+                    ImGui::Spacing();
+
+                    const char* animNames[] = {"Idle", "Walk", "Wave", "Jump"};
+                    ImGui::Combo("Preset", &animPresetIdx, animNames, 4);
+
+                    if (ImGui::Button("Load Animation", ImVec2(fullW, 26))) {
+                        sculpt::Animation* anims[] = {&idleAnim, &walkAnim, &waveAnim, &jumpAnim};
+                        animPlayer.current = anims[animPresetIdx];
+                        animPlayer.time = 0;
+                        animPlayer.playing = false;
+                        statusMsg = "Loaded: " + std::string(animNames[animPresetIdx]);
+                        statusTimer = 2.0f;
+                    }
+
+                    // Transport controls
+                    float halfBtn = (fullW - 8) * 0.333f;
+                    if (ImGui::Button(animPlayer.playing ? "Pause" : "Play", ImVec2(halfBtn, 28))) {
+                        if (animPlayer.playing) animPlayer.pause();
+                        else animPlayer.play();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Stop", ImVec2(halfBtn, 28))) {
+                        animPlayer.stop();
+                        armature.resetPose();
+                        armature.applyPose(mesh, restPositions, restNormals);
+                        renderer.updateMeshVertices(mesh);
+                        boneRenderer.update(armature, selectedBone);
+                    }
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Loop", &animPlayer.loop);
+
+                    ImGui::SliderFloat("Speed", &animPlayer.speed, 0.1f, 3.0f, "%.1fx");
+
+                    if (animPlayer.current) {
+                        float dur = animPlayer.current->duration;
+                        if (dur > 0 && ImGui::SliderFloat("Time", &animPlayer.time, 0, dur, "%.2fs")) {
+                            animPlayer.current->evaluate(animPlayer.time, armature);
+                            armature.updatePoseMatrices();
+                            armature.applyPose(mesh, restPositions, restNormals);
+                            renderer.updateMeshVertices(mesh);
+                            boneRenderer.update(armature, selectedBone);
+                        }
+                    }
+
+                    // Remove rig
+                    ImGui::Spacing();
+                    if (ImGui::Button("Remove Rig", ImVec2(fullW, 24))) {
+                        armature.clear();
+                        hasArmature = false;
+                        selectedBone = -1;
+                        animPlayer.stop();
+                        animPlayer.current = nullptr;
+                        for (size_t ri = 0; ri < std::min(restPositions.size(), mesh.vertexCount()); ri++) {
+                            mesh.vertex(static_cast<int32_t>(ri)).position = restPositions[ri];
+                            mesh.vertex(static_cast<int32_t>(ri)).normal = restNormals[ri];
+                        }
+                        renderer.uploadMesh(mesh);
+                    }
+                }
 
                 ImGui::End();
             }
@@ -945,8 +1137,8 @@ int main(int argc, char* argv[]) {
             ImGui::Text("Vertices: %zu", mesh.vertexCount());
             ImGui::Text("Faces:    %zu", mesh.faceCount());
             ImGui::Text("FPS:      %.0f", io.Framerate);
-            const char* modeStr = modeManager.isSculpt() ? "SCULPT" : modeManager.isEdit() ? "EDIT" : "PAINT";
-            ImVec4 modeCol = modeManager.isSculpt() ? ImVec4(0.3f,0.6f,1,1) : modeManager.isEdit() ? ImVec4(1,0.6f,0.2f,1) : ImVec4(0.8f,0.3f,0.8f,1);
+            const char* modeStr = modeManager.isSculpt() ? "SCULPT" : modeManager.isEdit() ? "EDIT" : modeManager.isPaint() ? "PAINT" : "POSE";
+            ImVec4 modeCol = modeManager.isSculpt() ? ImVec4(0.3f,0.6f,1,1) : modeManager.isEdit() ? ImVec4(1,0.6f,0.2f,1) : modeManager.isPaint() ? ImVec4(0.8f,0.3f,0.8f,1) : ImVec4(0.2f,0.8f,0.5f,1);
             ImGui::TextColored(modeCol, "Mode: %s", modeStr);
 
             ImGui::End();
@@ -998,6 +1190,18 @@ int main(int argc, char* argv[]) {
                 ImGui::Text("MMB Drag  : Orbit");
                 ImGui::Text("RMB Drag  : Pan");
                 ImGui::Text("Scroll    : Zoom");
+                ImGui::Text("TAB       : Pose Mode");
+            }
+
+            if (modeManager.isPose()) {
+                ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.5f, 1.0f), "Pose Controls");
+                ImGui::Separator();
+                ImGui::Text("Auto-Rig  : Place skeleton");
+                ImGui::Text("Bone List : Select bone");
+                ImGui::Text("Sliders   : Rotate bone");
+                ImGui::Text("Play/Pause: Animate");
+                ImGui::Text("MMB Drag  : Orbit");
+                ImGui::Text("RMB Drag  : Pan");
                 ImGui::Text("TAB       : Sculpt Mode");
             }
 
@@ -1183,6 +1387,11 @@ int main(int argc, char* argv[]) {
             selRenderer.render(camera, aspect);
         }
 
+        // Pose mode bone overlay
+        if (modeManager.isPose() && hasArmature) {
+            boneRenderer.render(camera, aspect);
+        }
+
         // Render ImGui
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1191,6 +1400,7 @@ int main(int argc, char* argv[]) {
     }
 
     // --- Cleanup ---
+    boneRenderer.shutdown();
     selRenderer.shutdown();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();

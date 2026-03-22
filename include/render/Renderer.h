@@ -23,6 +23,7 @@ public:
     void shutdown();
 
     void uploadMesh(const HalfEdgeMesh& mesh);
+    void updateMeshVertices(const HalfEdgeMesh& mesh); // fast: only update pos+normal, no realloc
     void render(const Camera& camera, float aspectRatio);
 
     void setWireframe(bool enabled) { m_wireframe = enabled; }
@@ -40,6 +41,7 @@ private:
     uint32_t m_vbo = 0;
     uint32_t m_ebo = 0;
     uint32_t m_indexCount = 0;
+    uint32_t m_vertexCount = 0;
     bool m_wireframe = false;
     bool m_flatShading = false;
     ShadingMode m_shadingMode = ShadingMode::MatCap;
