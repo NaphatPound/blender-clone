@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.dylib
+
+# IDE
+.vscode/
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output files
+sculpt_output.*
+
+# Temp
+*.tmp
